@@ -1,14 +1,21 @@
 class Abundance():
     def __init__(self, T0):
+        #Constants
         self.T0 = T0
         self.elem = {0: "n", 1: "p", 2: "2H", 3: "3H", 4: "3He", 5: "4He", 6: "7Li", 7: "7Be"}
         self.A = {"n": 1, "p": 1, "2H": 2, "3H": 3, "3He": 3, "4He": 4, "7Li": 7, "7Be": 7}
         self.B = {"n": 0, "p": 0, "2H": 2.22, "3H": 8.48, "3He": 7.72, "4He": 28.3, "7Li": 39.25, "7Be": 37.6}
         self.gA = {"n": 2, "p": 2, "2H": 3, "3H": 2, "3He": 2, "4He": 1, "7Li": 4, "7Be": 4}
         self.h = 1.15e-5
-        self.H0 = 
+        self.H0 = 1
+        self.me = 0.510998911
+        self.G = 6.70881e-45
+        self.hbar = 6.58211899e-22
+
+        #Lists and Stuff 
         self.A = {Ap, An, AD, AT, AHe3, AHe4, ALi7, ABe7}
         self.X_A = {Xp/Ap, Xn/An, XD/AD, XT/AT, XHe3/AHe3, XHe4/AHe4, XLi7/ALi7, XBe7/ABe7}
+        self.node,self.weights = roots_laguerre(64)
         self.int_rates_a = [
             [2.5e4, 0, 0, 0, 1, 0, 0, 0, 0, 0],
             [2.23e3, 0, 1, 0.112, 3.38, 2.65, 0, 0, 0, -3.72],
@@ -53,18 +60,61 @@ class Abundance():
             [4.64, 0, 0, -201.3], 
             [4.64, 0, 0, -220.4]
         ]
+    def electron_gas(self, T): 
+        """
+            Calculates rho_e, P_e, and c_e for any given temperature.
+        """
+        a = np.expand_dims(self.me/T, -1)
+        x = self.node
+        x2 = x*x
+        y = np.sqrt(x*x + a*a)
+        z = np.exp(y)
+        f = np.asarray([y, x2/y/3, y*y*z/(z+1)])
+        f*= x2/(z+1)*np.exp(x)
+        f = np.dot(f, self.weight)
+        f*= T**4*2/np.pi**2 
+        return f 
     
-    def a(sel)
-:
-        
-        return    
-    def H(self):
+    def rho(self, T):
+        """
+            Calculates rho for any given temperature.
+        """
+        N_nu = 3
+        rho_r = np.pi**2/15*T**4
+        rho_nu = 7/8*np.pi**2/15*N_nu*T**4
+        rho_e = self.electron_gas(T)[0]
+        rho_total = rho_e + rho_nu + rho_r
+        return rho_total
+    
+    def dr_dT(self,T):
+        """
+            Calculates dr/dT for any given temperature.
+        """
+        rho_r = np.pi**2/15*T**4
+        P_e = self.electron_gas(T)[1] 
+        P_r = rho_r/15*T**4/3
+        P = P_e + P_r 
+        c_e = self.electron_gas(T)[2]
+        c_r = rho_r*4
+        c = (c_e + c_r)/T
+        return -c/(P + self.rho(T))
+    
+    def H(self, T):
         """
             Calculates the value of Hubble at any given time.
         """
-        return 
+        return np.sqrt(8*np.pi*self.G/3)*np.sqrt(self.rho(T))/self.hbar
+    
+    def dt_dT(sefl, T):
+        """
+            Calculates dt/dT for any given temperature.
+        """ 
+        return self.dr_dT(T)/(3*self.H)
     
     def X_eq(self, elemKey, T):
+        """
+            Calculates dr/dT for any given temperature.
+        """
         A = self.A[elemKey]
         zeta = zeta(3)
         g = self.gA[elemKey]
