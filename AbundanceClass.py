@@ -1,7 +1,16 @@
 class Abundance():
-    def __init__(self, T0):
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy.interpolate import interp1d
+    from scipy.special import zeta, roots_laguerre
+    from scipy.integrate import solve_ivp, quad
+
+    def __init__(self, T0=1e1, T1=1e-2, N_nu=3):
         #Constants
-        self.T0 = T0
+        self.node = roots_laguerre(64)[0]
+        self.weight = roots_laguerre(64)[1]
+        self.Q_np = 1.29    # {MeV}, difference between neutron and proton masses
         self.elem = {0: "n", 1: "p", 2: "2H", 3: "3H", 4: "3He", 5: "4He", 6: "7Li", 7: "7Be"}
         self.A = {"n": 1, "p": 1, "2H": 2, "3H": 3, "3He": 3, "4He": 4, "7Li": 7, "7Be": 7}
         self.B = {"n": 0, "p": 0, "2H": 2.22, "3H": 8.48, "3He": 7.72, "4He": 28.3, "7Li": 39.25, "7Be": 37.6}
@@ -11,12 +20,27 @@ class Abundance():
         self.me = 0.510998911
         self.G = 6.70881e-45
         self.hbar = 6.58211899e-22
+        self.k_B = 8.617343e-11 #MeV/K
+        self.eta = 5e-10
+        self.T0, self.T1 = T0, T1   # {MeV}, initial, final Temperatures
+        self.N_nu = N_nu
+        self.tau_n = 885.7      # {s}, decay time for neutron
+        self.zeta3 = 1.2020569031595942854
+        self.c = 2.99792458e10              # {cm/s}, speed of light
+        self.nhc3 = 2.75*self.eta*2*self.zeta3/(np.pi**2 * (self.hbar * self.c)**3)
+        self.q = self.Q_np/self.me #added 
+        self.k = 1/quad(lambda x: np.sqrt(x**2-1)*x*(self.q-x)**2, 1, self.q)[0]
+
+
+        self.T, self.T_nu, self.time = self.expansion(10*T0, T1) #took away an N_nu
+        print(len(self.time), len(self.T), len(self.T_nu))
+
+        p_to_n, n_to_p = self.weak_rate(self.T, self.T_nu, self.tau_n)
+        print(len(self.time), len(self.T), len(self.T_nu), len(p_to_n), len(n_to_p))
+        self.interp = interp1d(self.time, [self.T,self.T_nu, p_to_n, n_to_p], 'cubic', fill_value='extrapolate') # added in the vstack to get arrays the same shape
 
         #Lists and Stuff 
-        self.A = {Ap, An, AD, AT, AHe3, AHe4, ALi7, ABe7}
-        self.X_A = {Xp/Ap, Xn/An, XD/AD, XT/AT, XHe3/AHe3, XHe4/AHe4, XLi7/ALi7, XBe7/ABe7}
-        self.node,self.weights = roots_laguerre(64)
-        self.int_rates_a = [
+        self.int_rates_a = np.array([
             [2.5e4, 0, 0, 0, 1, 0, 0, 0, 0, 0],
             [2.23e3, 0, 1, 0.112, 3.38, 2.65, 0, 0, 0, -3.72],
             [1, 0, 0, 0, 1, 75.5, 0, 0, 1250, 0, 0],
@@ -37,8 +61,8 @@ class Abundance():
             [6.74e9, 0, 0, 0, 1, 0, 0, 0, 0, 0],
             [1.42e9, 0, 1, 0.0493, 0, 0, 0, 0, 0, -8.47],
             [1.2e7, 0, 0, 0, 0, 0, 0, 1, 0, 0] 
-        ]
-        self.int_rates_b = [ 
+        ])
+        self.int_rates_b = np.array([ 
             [4.68e9, -1, 3/2, -25.82],
             [1.63e10, -1, 3/2, -63.75], 
             [1.63e10, -1, 3/2, -72.62], 
@@ -59,7 +83,32 @@ class Abundance():
             [1, 0, 0, -19.07], 
             [4.64, 0, 0, -201.3], 
             [4.64, 0, 0, -220.4]
-        ]
+        ])
+    
+    def expansion(self,T0,T1,nstep=256):
+        T = np.geomspace(T0,T1,nstep)
+        soln_t = solve_ivp(self.dt_dT,T[[0,-1]],[0],t_eval=T)
+        soln_Tnu = solve_ivp(self.dTnu_dT,T[[0,-1]],[T0],t_eval=T)
+        print(len(soln_t.t), len(soln_Tnu.y[0]), len(soln_t.y[0]))
+        return soln_t.t, soln_Tnu.y[0], soln_t.y[0]
+    
+    def weak_rate(self, T, T_nu, tau_n):
+        mT = self.me/T
+        a = np.expand_dims(mT, -1)
+        b = np.expand_dims(T/T_nu, -1)
+        c = np.expand_dims(self.q*mT, -1)
+
+        x = self.node
+        y = x+a
+        z = np.exp(y)
+        z1,z2 = np.exp((y+c)*b), np.exp((y-c)*b)
+        y1,y2 = (y+c)**2/(z1+1), (y-c)**2/(z2+1)
+        f = np.asarray([y1*z + y2*z2, y2*z + y1*z1])
+        f *= y*np.sqrt(x*(x+2*a))/(z+1)*np.exp(x)
+        f = np.dot(f, self.weight)# integral [0,infty]
+
+        return f/mT**5*self.k/tau_n
+
     def electron_gas(self, T): 
         """
             Calculates rho_e, P_e, and c_e for any given temperature.
@@ -73,7 +122,7 @@ class Abundance():
         f*= x2/(z+1)*np.exp(x)
         f = np.dot(f, self.weight)
         f*= T**4*2/np.pi**2 
-        return f 
+        return f
     
     def rho(self, T):
         """
@@ -86,7 +135,7 @@ class Abundance():
         rho_total = rho_e + rho_nu + rho_r
         return rho_total
     
-    def dr_dT(self,T):
+    def dr_dT(self,T, r):
         """
             Calculates dr/dT for any given temperature.
         """
@@ -105,11 +154,16 @@ class Abundance():
         """
         return np.sqrt(8*np.pi*self.G/3)*np.sqrt(self.rho(T))/self.hbar
     
-    def dt_dT(sefl, T):
+    def dTnu_dT(self,T,T_nu):
+        T_nu = self.T0
+        dr_dT = self.dr_dT(T,r=0)
+        return T_nu * dr_dT
+
+    def dt_dT(self, T, r): #changed, r used to be a t
         """
             Calculates dt/dT for any given temperature.
         """ 
-        return self.dr_dT(T)/(3*self.H)
+        return self.dr_dT(T,r=0)/(3*self.H(T)) #changed, used to be just self.H
     
     def X_eq(self, elemKey, T):
         """
@@ -132,7 +186,7 @@ class Abundance():
         """
         return self.h * T**3
     
-    def interaction_rates_a (self, reactionIdx, T):
+    def interaction_rates_a(self, reactionIdx, T):
         """
             Gives the interaction rate equation for reaction.
 
@@ -142,14 +196,16 @@ class Abundance():
                 int_rate: (float), interaction rate for given T, rho_b 
         """
         rho_b = self.rho_b(T)
-        a = self.int_rates_a[reactionIdx,0]
-        b = self.int_rates_a[reactionIdx,1:8]
-        c = self.int_rates_a[reactionIdx,8:]
-        polynomial = b[0]*T**(-3/2) + sum([b[i+1]*T**((i-2)/3) for i in range(len(b)-1)])
-        exponential = np.exp(c[0]*T**(-1) + c [1]*(T**(-1/3)))
+        # print(len(self.int_rates_a[19]))
+        a = self.int_rates_a[reactionIdx][0]
+        b = self.int_rates_a[reactionIdx][1:8]
+        c = self.int_rates_a[reactionIdx][8:]
+        T9 = T/(self.k_B*1e9)
+        polynomial = b[0]*T9**(-3/2) + sum([b[i+1]*T9**((i-2)/3) for i in range(len(b)-1)])
+        exponential = np.exp(c[0]*T9**(-1) + c [1]*(T9**(-1/3)))
         return a * rho_b * polynomial * exponential
     
-    def interaction_rates_b (self, reactionIdx, T):
+    def interaction_rates_b(self, reactionIdx, T):
         """
             Gives the f_i equation for reaction. 
             
@@ -160,10 +216,10 @@ class Abundance():
         """ 
         rho_b = self.rho_b(T)
         a,b,c,d = self.int_rates_b[reactionIdx]
-
-        return a * rho_b**(b) * T**c * np.exp(d*T**(-1)) * self.interaction_rates_a(reactionIdx, T, rho_b)
+        T9 = T/(self.k_B*1e9)
+        return a * rho_b**(b) * T9**c * np.exp(d*T9**(-1)) * self.interaction_rates_a(reactionIdx, T)
     
-    def dXA_dt(self, T):
+    def dXA_dt(self, T, X_A):
         """
             Calculate the derivatives from the rate equations.
 
@@ -177,6 +233,17 @@ class Abundance():
         dX6_dt = self.X_A[3]*self.X_A[5]*self.interaction_rates_a(16,T) + self.X_A[1]*self.X_A[7]*self.interaction_rates_a(17,T) + .5*self.X_A[5]**2*self.interaction_rates_b(18,T) - self.X_A[6]*(self.interaction_rates_b(16,T) + self.X_A[0]*self.interaction_rates_b(17,T) + self.X_A[0]*self.interaction_rates_a(18,T))
         dX7_dt = self.X_A[4]*self.X_A[5]*self.interaction_rates_a(15,T) + self.X_A[0]*self.X_A[6]*self.interaction_rates_b(17,T) + .5*self.X_A[5]**2*self.interaction_rates_b(19,T) - self.X_A[7]*(self.interaction_rates_b(15,T) + self.X_A[1]*(self.interaction_rates_a(17,T) + self.interaction_rates_a(18,T))) 
 
-        return [dX0_dt, dX1_dt, dX2_dt, dX3_dt, dX4_dt, dX5_dt, dX6_dt, dX7_dt]
+        return np.array([dX0_dt, dX1_dt, dX2_dt, dX3_dt, dX4_dt, dX5_dt, dX6_dt, dX7_dt])
 
-    
+    def BBN(self, N=64, nsteps=256): 
+        t0,t1 = np.interp([self.T0,self.T1],self.T[::-1],self.time[::-1])
+        t = np.geomspace(t0,t1,nsteps)
+        self.X_A = np.zeros(N)
+
+        # Set the neutron and proton initial conditions
+        self.X_A[0] = 1/(np.exp(self.Q_np/self.T0)+1)
+        self.X_A[1] = 1-self.X_A[0]
+
+        soln = solve_ivp(self.dXA_dt,t[[0,-1]],self.X_A,'LSODA',t_eval=t)
+        X = (soln.y.T * self.A).T[[self.elem.index(i) for i in len(self.elem)]]
+        return np.interp(t,self.time,self.T), X
